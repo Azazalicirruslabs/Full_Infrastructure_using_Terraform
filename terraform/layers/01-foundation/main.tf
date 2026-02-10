@@ -1,5 +1,5 @@
 # Layer 01: Foundation - Main Configuration
-# Creates: VPC, Subnets, Security Groups
+# Creates: VPC, Subnets, Security Groups, VPC Endpoints
 
 #------------------------------------------------------------------------------
 # VPC Module
@@ -13,6 +13,20 @@ module "vpc" {
   availability_zones   = var.availability_zones
   public_subnet_cidrs  = var.public_subnet_cidrs
   private_subnet_cidrs = var.private_subnet_cidrs
+}
+
+#------------------------------------------------------------------------------
+# VPC Endpoints Module (replaces NAT Gateway)
+#------------------------------------------------------------------------------
+module "vpc_endpoints" {
+  source = "../../modules/vpc-endpoints"
+
+  project_name            = var.project_name
+  environment             = var.environment
+  vpc_id                  = module.vpc.vpc_id
+  private_subnet_ids      = module.vpc.private_subnet_ids
+  private_route_table_ids = module.vpc.private_route_table_ids
+  aws_region              = var.aws_region
 }
 
 #------------------------------------------------------------------------------
@@ -60,8 +74,18 @@ resource "aws_security_group" "ecs_tasks" {
   description = "Security group for ECS tasks"
   vpc_id      = module.vpc.vpc_id
 
+  # Frontend traffic (port 80)
   ingress {
-    description     = "Traffic from ALB"
+    description     = "Frontend traffic from ALB"
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+
+  # Backend traffic (port 8000)
+  ingress {
+    description     = "Backend traffic from ALB"
     from_port       = 8000
     to_port         = 8000
     protocol        = "tcp"
@@ -80,3 +104,4 @@ resource "aws_security_group" "ecs_tasks" {
     Name = "${var.project_name}-${var.environment}-ecs-tasks-sg"
   }
 }
+

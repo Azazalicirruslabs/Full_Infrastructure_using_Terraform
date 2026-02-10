@@ -30,6 +30,13 @@ variable "services" {
     health_path    = string
   }))
   default = {
+    "frontend" = {
+      cpu            = 256
+      memory         = 512
+      container_port = 80
+      desired_count  = 1
+      health_path    = "/api-ui/health"
+    }
     "api" = {
       cpu            = 256
       memory         = 512

@@ -153,6 +153,9 @@ resource "aws_iam_role_policy" "ecs_task_s3_access" {
 
 #------------------------------------------------------------------------------
 # Task Definitions (one per service)
+# Best Practices (2024+):
+#   - skip_destroy = true: Don't deregister old revisions on destroy
+#   - track_latest = true: Track latest ACTIVE revision (for CI/CD updates)
 #------------------------------------------------------------------------------
 resource "aws_ecs_task_definition" "services" {
   for_each = var.services
@@ -164,6 +167,10 @@ resource "aws_ecs_task_definition" "services" {
   memory                   = each.value.memory
   execution_role_arn       = aws_iam_role.ecs_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
+
+  # Lifecycle management (Terraform AWS Provider v5.37.0+)
+  skip_destroy = true   # Don't deregister old revisions when Terraform destroys/replaces
+  track_latest = true   # Sync with latest ACTIVE revision (allows CI/CD to update)
 
   runtime_platform {
     operating_system_family = "LINUX"
@@ -194,11 +201,18 @@ resource "aws_ecs_task_definition" "services" {
       }
 
       environment = concat(
+        # Common environment variables
         [
           { name = "ENVIRONMENT", value = var.environment },
           { name = "SERVICE_NAME", value = each.key },
           { name = "AWS_REGION", value = data.aws_region.current.name }
         ],
+        # Frontend-specific: NEXT_PUBLIC_BASE_URL points to ALB for API calls
+        each.key == "frontend" ? [
+          { name = "NEXT_PUBLIC_BASE_URL", value = "http://${aws_lb.main.dns_name}" },
+          { name = "NODE_ENV", value = "production" }
+        ] : [],
+        # Backend services: S3 and RDS config
         local.s3_bucket_id != "" ? [
           { name = "S3_BUCKET", value = local.s3_bucket_id }
         ] : [],
@@ -243,16 +257,10 @@ resource "aws_lb_listener" "http" {
   port              = "80"
   protocol          = "HTTP"
 
+  # Default action: Forward to Frontend (catches all non-API traffic)
   default_action {
-    type = "fixed-response"
-    fixed_response {
-      content_type = "application/json"
-      message_body = jsonencode({
-        error   = "Not Found"
-        message = "Use /api, /gateway, /classification, /regression, /fairness, /data_drift, /what_if, /mainflow"
-      })
-      status_code = "404"
-    }
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.services["frontend"].arn
   }
 }
 
@@ -287,10 +295,11 @@ resource "aws_lb_target_group" "services" {
 }
 
 #------------------------------------------------------------------------------
-# Listener Rules (path-based routing)
+# Listener Rules (path-based routing for backend services only)
 #------------------------------------------------------------------------------
 locals {
-  service_paths = {
+  # Backend services with their path patterns (excludes frontend)
+  backend_service_paths = {
     "api"            = "/api/*"
     "gateway"        = "/gateway/*"
     "classification" = "/classification/*"
@@ -302,11 +311,11 @@ locals {
   }
 }
 
-resource "aws_lb_listener_rule" "services" {
-  for_each = var.services
+resource "aws_lb_listener_rule" "backend_services" {
+  for_each = local.backend_service_paths
 
   listener_arn = aws_lb_listener.http.arn
-  priority     = index(keys(var.services), each.key) + 1
+  priority     = index(keys(local.backend_service_paths), each.key) + 1
 
   action {
     type             = "forward"
@@ -315,7 +324,7 @@ resource "aws_lb_listener_rule" "services" {
 
   condition {
     path_pattern {
-      values = [local.service_paths[each.key]]
+      values = [each.value]
     }
   }
 }
@@ -349,7 +358,7 @@ resource "aws_ecs_service" "services" {
 
   depends_on = [
     aws_lb_listener.http,
-    aws_lb_listener_rule.services
+    aws_lb_listener_rule.backend_services
   ]
 
   lifecycle {

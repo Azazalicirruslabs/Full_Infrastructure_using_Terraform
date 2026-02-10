@@ -20,7 +20,13 @@ output "private_subnet_ids" {
   value       = aws_subnet.private[*].id
 }
 
+output "private_route_table_ids" {
+  description = "IDs of private route tables"
+  value       = [aws_route_table.private.id]
+}
+
 output "internet_gateway_id" {
   description = "ID of the Internet Gateway"
   value       = aws_internet_gateway.this.id
 }
+
